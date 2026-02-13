@@ -17,7 +17,7 @@ class MothercareScraper(BaseStrollerScraper):
 
     async def _get_all_product_urls(self, page: Page) -> List[str]:
         await page.goto(self._get_start_url(), wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
-        await asyncio.sleep(8)  # JS-rendered SPA, needs time to hydrate
+        await asyncio.sleep(5)  # JS-rendered SPA, needs time to hydrate
 
         # Click "load more products" button until all products are shown
         for _ in range(30):
@@ -54,7 +54,7 @@ class MothercareScraper(BaseStrollerScraper):
 
     async def _scrape_product_page(self, page: Page, url: str) -> Optional[StrollerProduct]:
         await page.goto(url, wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
-        await asyncio.sleep(6)  # Wait for JS to render product details
+        await asyncio.sleep(3)  # Wait for JS to render product details
 
         product = StrollerProduct()
 

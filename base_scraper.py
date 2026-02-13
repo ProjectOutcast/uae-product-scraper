@@ -15,9 +15,10 @@ class BaseStrollerScraper(ABC):
     RETAILER_NAME: str = ""
     BASE_URL: str = ""
     LISTING_URL: str = ""
-    MAX_RETRIES: int = 3
-    RETRY_DELAY: float = 5.0
-    PAGE_LOAD_TIMEOUT: int = 30000
+    MAX_RETRIES: int = 2
+    RETRY_DELAY: float = 3.0
+    PAGE_LOAD_TIMEOUT: int = 20000
+    PER_PRODUCT_TIMEOUT: int = 45  # seconds — hard cap per product including retries
 
     def __init__(self, progress: ProgressTracker, headless: bool = True, keyword: str = "", on_status=None):
         self.progress = progress
@@ -66,11 +67,23 @@ class BaseStrollerScraper(ABC):
                     self._emit(f"  No products found on {self.RETAILER_NAME}")
 
                 scraped_count = 0
+                skipped = 0
                 for i, url in enumerate(product_urls):
                     if self.progress.is_already_scraped(self.RETAILER_NAME, url):
+                        skipped += 1
                         continue
 
-                    product = await self._scrape_with_retry(page, url)
+                    # Hard timeout per product — skip if it takes too long
+                    try:
+                        product = await asyncio.wait_for(
+                            self._scrape_with_retry(page, url),
+                            timeout=self.PER_PRODUCT_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
+                        self.logger.warning(f"Timed out after {self.PER_PRODUCT_TIMEOUT}s on {url}")
+                        self._emit(f"  [{self.RETAILER_NAME}] Skipped product {i + 1}/{total_urls} (timed out)")
+                        product = None
+
                     if product:
                         product.retailer = self.RETAILER_NAME
                         product.link = url
@@ -81,7 +94,7 @@ class BaseStrollerScraper(ABC):
                     # Emit progress every product
                     self._emit(f"  [{self.RETAILER_NAME}] Product {i + 1}/{total_urls} — {scraped_count} scraped")
 
-                    await random_delay(1.5, 4.0)
+                    await random_delay(0.8, 2.0)
 
                     if (i + 1) % 5 == 0 or i + 1 == len(product_urls):
                         self.progress.update(self.RETAILER_NAME, i + 1, len(product_urls))
