@@ -57,6 +57,66 @@
         .progress-section { display: none; }
         .progress-section.active { display: block; }
 
+        /* ── Status dashboard ── */
+        .status-dashboard {
+            display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;
+        }
+        .status-stat {
+            text-align: center; padding: 1rem; background: var(--bg-input);
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+        }
+        .status-stat .stat-value {
+            font-size: 1.5rem; font-weight: 700; color: var(--text);
+            font-variant-numeric: tabular-nums;
+        }
+        .status-stat .stat-value.accent { color: var(--accent); }
+        .status-stat .stat-value.success { color: var(--success); }
+        .status-stat .stat-label {
+            font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase;
+            letter-spacing: 0.05em; margin-top: 0.2rem;
+        }
+
+        /* ── Current action ── */
+        .current-action {
+            display: flex; align-items: center; gap: 0.75rem;
+            padding: 0.8rem 1rem; margin-bottom: 1rem;
+            background: rgba(124, 106, 255, 0.08); border: 1px solid rgba(124, 106, 255, 0.2);
+            border-radius: var(--radius-sm); min-height: 44px;
+        }
+        .current-action .spinner {
+            width: 18px; height: 18px; border: 2px solid rgba(124, 106, 255, 0.3);
+            border-top-color: var(--accent); border-radius: 50%;
+            animation: spin 0.8s linear infinite; flex-shrink: 0;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .current-action .action-text {
+            font-size: 0.85rem; color: var(--text); flex: 1;
+        }
+        .current-action.done { background: rgba(74, 222, 128, 0.08); border-color: rgba(74, 222, 128, 0.2); }
+        .current-action.done .spinner { display: none; }
+        .current-action.done .action-text { color: var(--success); }
+
+        /* ── Retailer tracker ── */
+        .retailer-tracker { margin-bottom: 1rem; }
+        .retailer-tracker h3 { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.6rem; font-weight: 500; }
+        .tracker-grid { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+        .tracker-chip {
+            padding: 0.3rem 0.6rem; font-size: 0.72rem; border-radius: 6px;
+            border: 1px solid var(--border); background: var(--bg-input); color: var(--text-dim);
+            transition: all 0.3s;
+        }
+        .tracker-chip.active {
+            border-color: var(--accent); background: rgba(124, 106, 255, 0.15);
+            color: var(--accent); animation: pulse-border 2s ease-in-out infinite;
+        }
+        @keyframes pulse-border {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(124, 106, 255, 0.3); }
+            50% { box-shadow: 0 0 0 3px rgba(124, 106, 255, 0.1); }
+        }
+        .tracker-chip.done { border-color: var(--success); background: rgba(74, 222, 128, 0.1); color: var(--success); }
+        .tracker-chip.failed { border-color: var(--error); background: rgba(248, 113, 113, 0.1); color: var(--error); }
+
+        /* ── Progress bar ── */
         .progress-bar-container {
             width: 100%; height: 8px; background: var(--bg-input); border-radius: 4px; overflow: hidden; margin-bottom: 1rem;
         }
@@ -66,17 +126,28 @@
         }
         .progress-pct { text-align: right; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.3rem; }
 
+        /* ── Log ── */
+        .log-toggle {
+            display: flex; align-items: center; gap: 0.5rem; cursor: pointer;
+            padding: 0.5rem 0; color: var(--text-dim); font-size: 0.8rem;
+            border: none; background: none; font-family: inherit; margin-bottom: 0.5rem;
+        }
+        .log-toggle:hover { color: var(--text-muted); }
+        .log-toggle .arrow { transition: transform 0.2s; display: inline-block; }
+        .log-toggle.open .arrow { transform: rotate(90deg); }
         .log-container {
             background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm);
-            padding: 1rem; max-height: 300px; overflow-y: auto; font-family: 'SF Mono', 'Fira Code', monospace;
-            font-size: 0.8rem; line-height: 1.7;
+            padding: 1rem; max-height: 250px; overflow-y: auto; font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.78rem; line-height: 1.7; display: none;
         }
-        .log-entry { color: var(--text-muted); }
+        .log-container.open { display: block; }
+        .log-entry { color: var(--text-dim); }
         .log-entry.ok { color: var(--success); }
         .log-entry.fail { color: var(--error); }
         .log-entry.info { color: var(--accent); }
+        .log-entry.detail { color: var(--text-dim); font-size: 0.72rem; opacity: 0.7; }
 
-        .download-section { display: none; text-align: center; margin-top: 1rem; }
+        .download-section { display: none; text-align: center; margin-top: 1.5rem; }
         .download-section.active { display: block; }
         .download-btn {
             display: inline-block; padding: 0.8rem 2rem; font-size: 0.95rem; font-weight: 600;
@@ -115,11 +186,47 @@
 
         <div class="card progress-section" id="progressSection">
             <h2>Progress</h2>
+
+            <!-- Status dashboard -->
+            <div class="status-dashboard">
+                <div class="status-stat">
+                    <div class="stat-value accent" id="statElapsed">0:00</div>
+                    <div class="stat-label">Elapsed</div>
+                </div>
+                <div class="status-stat">
+                    <div class="stat-value" id="statRetailers">0 / 0</div>
+                    <div class="stat-label">Retailers</div>
+                </div>
+                <div class="status-stat">
+                    <div class="stat-value success" id="statProducts">0</div>
+                    <div class="stat-label">Products Found</div>
+                </div>
+            </div>
+
+            <!-- Current action -->
+            <div class="current-action" id="currentAction">
+                <div class="spinner"></div>
+                <div class="action-text" id="actionText">Initializing...</div>
+            </div>
+
+            <!-- Progress bar -->
             <div class="progress-pct" id="progressPct">0%</div>
             <div class="progress-bar-container">
                 <div class="progress-bar-fill" id="progressBar"></div>
             </div>
+
+            <!-- Retailer tracker -->
+            <div class="retailer-tracker" id="retailerTracker">
+                <h3>Retailer Status</h3>
+                <div class="tracker-grid" id="trackerGrid"></div>
+            </div>
+
+            <!-- Collapsible log -->
+            <button class="log-toggle" id="logToggle" onclick="toggleLog()">
+                <span class="arrow">&#9654;</span> Detailed Log
+            </button>
             <div class="log-container" id="logContainer"></div>
+
             <div class="download-section" id="downloadSection">
                 <a class="download-btn" id="downloadBtn" href="#">Download CSV</a>
                 <p class="download-summary" id="downloadSummary"></p>

@@ -54,6 +54,8 @@ async def run_all_scrapers(
     completed = 0
     failed = []
 
+    log(f"Starting scrape for \"{keyword}\" across {total} retailer{'s' if total != 1 else ''}...", 0)
+
     for name in targets:
         if name not in registry:
             log(f"[WARN] Unknown retailer: {name}")
@@ -68,7 +70,20 @@ async def run_all_scrapers(
         log(f"Scraping: {name} ({completed + 1}/{total})", retailer_pct)
 
         scraper_cls = registry[name]
-        scraper = scraper_cls(progress=progress, headless=headless, keyword=keyword)
+
+        # on_status sends per-product messages to the UI
+        def _make_status_cb(cb):
+            def _cb(msg):
+                if cb:
+                    cb(msg)
+            return _cb
+
+        scraper = scraper_cls(
+            progress=progress,
+            headless=headless,
+            keyword=keyword,
+            on_status=_make_status_cb(progress_callback),
+        )
 
         try:
             products = await scraper.run()
@@ -79,15 +94,19 @@ async def run_all_scrapers(
 
             partial_path = os.path.join(output_dir, "products_partial.csv")
             export_combined_csv(all_products, partial_path)
-            log(f"[OK] {name}: {len(products)} products scraped", int((completed / total) * 100))
+            log(f"[OK] {name}: {len(products)} products scraped (total so far: {len(all_products)})", int((completed / total) * 100))
 
         except Exception as e:
             logging.exception(f"Failed to scrape {name}")
             progress.mark_retailer_failed(name, str(e))
             failed.append(name)
-            log(f"[FAIL] {name}: {e}")
+            completed += 1
+            log(f"[FAIL] {name}: {e}", int((completed / total) * 100))
 
-    log(f"DONE — {len(all_products)} products from {completed}/{total} retailers", 100)
+    if failed:
+        log(f"DONE — {len(all_products)} products from {completed - len(failed)}/{total} retailers ({len(failed)} failed: {', '.join(failed)})", 100)
+    else:
+        log(f"DONE — {len(all_products)} products from {completed}/{total} retailers", 100)
 
     return all_products
 

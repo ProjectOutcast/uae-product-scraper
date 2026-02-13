@@ -19,12 +19,13 @@ class BaseStrollerScraper(ABC):
     RETRY_DELAY: float = 5.0
     PAGE_LOAD_TIMEOUT: int = 30000
 
-    def __init__(self, progress: ProgressTracker, headless: bool = True, keyword: str = ""):
+    def __init__(self, progress: ProgressTracker, headless: bool = True, keyword: str = "", on_status=None):
         self.progress = progress
         self.headless = headless
         self.keyword = keyword or DEFAULT_KEYWORD
         self.logger = logging.getLogger(f"scraper.{self.RETAILER_NAME}")
         self.products: List[StrollerProduct] = []
+        self._on_status = on_status  # callback(message) for live UI updates
 
     def _get_start_url(self) -> str:
         """Return search URL when keyword differs from default, otherwise listing URL."""
@@ -35,7 +36,13 @@ class BaseStrollerScraper(ABC):
                 return search_tpl.format(keyword=self.keyword)
         return self.LISTING_URL
 
+    def _emit(self, msg):
+        """Send a status message to the UI callback."""
+        if self._on_status:
+            self._on_status(msg)
+
     async def run(self) -> List[StrollerProduct]:
+        self._emit(f"  Launching browser for {self.RETAILER_NAME}...")
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=self.headless)
             context = await browser.new_context(
@@ -49,10 +56,16 @@ class BaseStrollerScraper(ABC):
 
             try:
                 await self._dismiss_cookies(page)
+                self._emit(f"  Collecting product URLs from {self.RETAILER_NAME}...")
                 product_urls = await self._get_all_product_urls(page)
-                self.logger.info(f"Found {len(product_urls)} product URLs for {self.RETAILER_NAME}")
-                print(f"  Found {len(product_urls)} product URLs")
+                total_urls = len(product_urls)
+                self.logger.info(f"Found {total_urls} product URLs for {self.RETAILER_NAME}")
+                self._emit(f"  Found {total_urls} product URLs on {self.RETAILER_NAME}")
 
+                if total_urls == 0:
+                    self._emit(f"  No products found on {self.RETAILER_NAME}")
+
+                scraped_count = 0
                 for i, url in enumerate(product_urls):
                     if self.progress.is_already_scraped(self.RETAILER_NAME, url):
                         continue
@@ -63,6 +76,10 @@ class BaseStrollerScraper(ABC):
                         product.link = url
                         self.products.append(product)
                         self.progress.mark_scraped(self.RETAILER_NAME, url)
+                        scraped_count += 1
+
+                    # Emit progress every product
+                    self._emit(f"  [{self.RETAILER_NAME}] Product {i + 1}/{total_urls} — {scraped_count} scraped")
 
                     await random_delay(1.5, 4.0)
 
