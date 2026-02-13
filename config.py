@@ -56,7 +56,7 @@ RETAILERS = {
     },
     "Jikel": {
         "base_url": "https://www.jikelbaby.ae",
-        "listing_url": "https://www.jikelbaby.ae/collections/strollers",
+        "listing_url": "https://www.jikelbaby.ae/strollers",
         "search_url": "https://www.jikelbaby.ae/search?q={keyword}",
     },
     "Sophia Baby": {
@@ -86,8 +86,8 @@ RETAILERS = {
     },
     "Eggs and Soldiers": {
         "base_url": "https://www.eggsnsoldiers.com",
-        "listing_url": "https://www.eggsnsoldiers.com/out-about/strollers",
-        "search_url": "https://www.eggsnsoldiers.com/search?q={keyword}",
+        "listing_url": "https://www.eggsnsoldiers.com/product-category/out-about/strollers/",
+        "search_url": "https://www.eggsnsoldiers.com/?s={keyword}&post_type=product",
     },
     "Baby Care": {
         "base_url": "https://www.bcbabycare.ae",

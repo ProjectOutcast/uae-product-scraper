@@ -11,42 +11,105 @@ from anti_bot import random_delay
 
 
 class JuniorCoutureScraper(BaseStrollerScraper):
+    """Junior Couture UAE - Magento/Salesforce Commerce.
+    Product URLs: /en/brand-product-name/SKU.html
+    Uses catalogsearch for keyword search.
+    """
     RETAILER_NAME = "Junior Couture"
     BASE_URL = "https://www.juniorcouture.ae"
     LISTING_URL = "https://www.juniorcouture.ae/en/strollers"
 
+    # CMS / non-product .html pages on Junior Couture
+    _CMS_PAGES = {
+        "returns-exchanges-policy", "store-locator", "about-us",
+        "privacy-policy", "shipping-delivery", "contact-us",
+        "terms-and-conditions", "faq", "gift-card", "size-guide",
+    }
+
+    def _is_product_url(self, href: str) -> bool:
+        """Check if a URL is a product page."""
+        if not href or not href.endswith(".html"):
+            return False
+        path = href.split("?")[0]
+        # Must contain /en/
+        if "/en/" not in path:
+            return False
+        # Exclude known non-product patterns
+        excludes = [
+            "/gift-card", "/category", "/search", "/cart",
+            "/account", "/checkout", "/contact",
+        ]
+        for ex in excludes:
+            if ex in path.lower():
+                return False
+        # Exclude CMS pages
+        basename = path.rstrip("/").split("/")[-1].replace(".html", "")
+        if basename in self._CMS_PAGES:
+            return False
+        # Product URLs have format: /en/brand-product-name/SKU.html
+        # Must have at least 4 parts: ['', 'en', 'brand-product', 'SKU.html']
+        parts = [p for p in path.split("/") if p]
+        if len(parts) >= 3:  # 'en', 'brand-product-name', 'SKU.html'
+            # The SKU filename usually contains uppercase letters and digits
+            sku_file = parts[-1].replace(".html", "")
+            if any(c.isupper() for c in sku_file) and any(c.isdigit() for c in sku_file):
+                return True
+        return False
+
     async def _get_all_product_urls(self, page: Page) -> List[str]:
         urls = set()
 
-        for try_url in [
-            self._get_start_url(),
-            f"{self.BASE_URL}/en/search?q={self.keyword}",
-            f"{self.BASE_URL}/en/catalogsearch/result/?q={self.keyword}",
-        ]:
-            try:
-                await page.goto(try_url, wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
-                await asyncio.sleep(3)
-            except Exception:
-                continue
-
-            # Scroll to load
+        # Try catalogsearch first (most reliable for Magento)
+        search_url = f"{self.BASE_URL}/en/catalogsearch/result/?q={self.keyword}"
+        try:
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
+            await asyncio.sleep(3)
             await self._scroll_to_bottom(page, pause=1.5, max_scrolls=20)
 
-            links = await page.query_selector_all(
-                "a[href*='/product/'], a[href*='/en/'], "
-                ".product-card a, .product-item a, [class*='product'] a[href]"
-            )
+            links = await page.query_selector_all("a[href$='.html']")
             for link in links:
                 href = await link.get_attribute("href")
-                if href and len(href.split("/")[-1]) > 10 and not any(
-                    x in href for x in ["/category", "/search", "/cart", "/account", "/strollers"]
-                ):
+                if href and self._is_product_url(href):
+                    # Remove ?size= variants to deduplicate
                     clean = href.split("?")[0]
                     full = self._make_absolute(clean)
                     urls.add(full)
+        except Exception:
+            pass
 
-            if urls:
-                break
+        # Fallback: listing page
+        if not urls:
+            try:
+                await page.goto(self._get_start_url(), wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
+                await asyncio.sleep(3)
+                await self._scroll_to_bottom(page, pause=1.5, max_scrolls=20)
+
+                links = await page.query_selector_all("a[href$='.html']")
+                for link in links:
+                    href = await link.get_attribute("href")
+                    if href and self._is_product_url(href):
+                        clean = href.split("?")[0]
+                        full = self._make_absolute(clean)
+                        urls.add(full)
+            except Exception:
+                pass
+
+        # Fallback: homepage product links
+        if not urls:
+            try:
+                await page.goto(f"{self.BASE_URL}/en/", wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
+                await asyncio.sleep(3)
+                await self._scroll_to_bottom(page, pause=1.5, max_scrolls=10)
+
+                links = await page.query_selector_all("a[href$='.html']")
+                for link in links:
+                    href = await link.get_attribute("href")
+                    if href and self._is_product_url(href):
+                        clean = href.split("?")[0]
+                        full = self._make_absolute(clean)
+                        urls.add(full)
+            except Exception:
+                pass
 
         return list(urls)
 
@@ -73,11 +136,11 @@ class JuniorCoutureScraper(BaseStrollerScraper):
                 product.brand = brand_info.get("name", "")
 
         if not product.product:
-            product.product = await self._safe_text(page, "h1")
+            product.product = await self._safe_text(page, "h1.page-title span, h1.page-title, h1")
         if not product.brand:
             product.brand = await self._safe_text(page, "[class*='brand'], .product-brand")
         if not product.price:
-            product.price = await self._safe_text(page, "[class*='price'], .product-price")
+            product.price = await self._safe_text(page, ".price-wrapper .price, .special-price .price, [class*='price'] .price")
         if not product.description:
             product.description = await self._safe_text(page, "[class*='description'], .product-description")
 
@@ -85,7 +148,7 @@ class JuniorCoutureScraper(BaseStrollerScraper):
         if features:
             product.features = " ; ".join(features[:15])
 
-        specs = await self._extract_spec_table(page, "table, [class*='spec']")
+        specs = await self._extract_spec_table(page, "table, .additional-attributes, [class*='spec']")
         product.weight = specs.get("weight", "")
         product.color = specs.get("color", specs.get("colour", ""))
 

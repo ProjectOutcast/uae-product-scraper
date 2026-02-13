@@ -1,7 +1,5 @@
 from .mumzworld import MumzworldScraper
-from .firstcry import FirstCryScraper
 from .babyshop import BabyshopScraper
-from .momstore import MomStoreScraper
 from .mamasandpapas import MamasAndPapasScraper
 from .ellijunior import EllieJuniorScraper
 from .ounass import OunassScraper
@@ -10,24 +8,26 @@ from .galerieslafayette import GaleriesLafayetteScraper
 from .fivelittleducks import FiveLittleDucksScraper
 from .mothercare import MothercareScraper
 from .jikel import JikelScraper
-from .sophiababy import SophiaBabyScraper
 from .birdsandbees import BirdsAndBeesScraper
 from .juniorcouture import JuniorCoutureScraper
 from .lebouquet import LeBouquetScraper
-from .babiesandmore import BabiesAndMoreScraper
-from .eggsandsoldiers import EggsAndSoldiersScraper
 from .babycare import BabyCareScraper
-from .babykish import BabyKishScraper
 from .nanan import NananScraper
 from .babylife import BabyLifeScraper
+
+# DISABLED — sites are dead/unreachable (Feb 2026):
+# from .firstcry import FirstCryScraper      # Heavy JS SPA, nothing renders
+# from .momstore import MomStoreScraper      # SSL certificate error
+# from .sophiababy import SophiaBabyScraper  # DNS resolution failure
+# from .babykish import BabyKishScraper      # Brand showcase, not e-commerce
+# from .babiesandmore import BabiesAndMoreScraper  # Clothing-only, no strollers/gear
+# from .eggsandsoldiers import EggsAndSoldiersScraper  # WooCommerce - 0 stroller products found
 
 
 def get_scraper_registry():
     return {
         "Mumzworld": MumzworldScraper,
-        "FirstCry": FirstCryScraper,
         "Babyshop": BabyshopScraper,
-        "Mom Store": MomStoreScraper,
         "Mamas & Papas": MamasAndPapasScraper,
         "Ellie Junior": EllieJuniorScraper,
         "Ounass": OunassScraper,
@@ -36,14 +36,10 @@ def get_scraper_registry():
         "Five Little Ducks": FiveLittleDucksScraper,
         "Mothercare": MothercareScraper,
         "Jikel": JikelScraper,
-        "Sophia Baby": SophiaBabyScraper,
         "Birds and Bees": BirdsAndBeesScraper,
         "Junior Couture": JuniorCoutureScraper,
         "Le Bouquet": LeBouquetScraper,
-        "Babies and More": BabiesAndMoreScraper,
-        "Eggs and Soldiers": EggsAndSoldiersScraper,
         "Baby Care": BabyCareScraper,
-        "Baby Kish": BabyKishScraper,
         "Nanan": NananScraper,
         "BabyLife UAE": BabyLifeScraper,
     }

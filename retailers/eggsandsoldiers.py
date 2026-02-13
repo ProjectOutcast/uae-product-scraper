@@ -11,38 +11,101 @@ from anti_bot import random_delay
 
 
 class EggsAndSoldiersScraper(BaseStrollerScraper):
-    """Eggs and Soldiers - eco-friendly baby boutique."""
+    """Eggs and Soldiers - WooCommerce baby boutique in Dubai.
+    Search: /?s=KEYWORD&post_type=product
+    Category: /product-category/out-about/strollers/
+    Product URLs are single-segment slugs like /bugaboo-dragonfly/
+    """
     RETAILER_NAME = "Eggs and Soldiers"
     BASE_URL = "https://www.eggsnsoldiers.com"
-    LISTING_URL = "https://www.eggsnsoldiers.com/out-about/strollers"
+    LISTING_URL = "https://www.eggsnsoldiers.com/product-category/out-about/strollers/"
+
+    # Non-product pages
+    _NON_PRODUCT_SLUGS = {
+        "brands", "classes", "our-stores", "contact-us", "advice-help",
+        "shipping-delivery", "cart", "checkout", "my-account", "shop",
+        "about-us", "returns", "privacy-policy", "terms-conditions",
+        "faq", "blog", "gift-card", "gift-cards",
+    }
+
+    def _extract_product_urls(self, links_data: list) -> set:
+        """Filter a list of href strings to find product URLs."""
+        urls = set()
+        for href in links_data:
+            if not href:
+                continue
+            clean = href.split("?")[0].rstrip("/")
+            if clean.startswith("/"):
+                clean = f"{self.BASE_URL}{clean}"
+            if not clean.startswith(self.BASE_URL):
+                continue
+            path = clean.replace(self.BASE_URL, "").strip("/")
+            # Product pages: single-segment slug, not in exclude list
+            if (path
+                    and "/" not in path
+                    and len(path) > 5
+                    and path not in self._NON_PRODUCT_SLUGS
+                    and "product-category" not in path
+                    and not path.startswith("#")):
+                urls.add(clean)
+        return urls
 
     async def _get_all_product_urls(self, page: Page) -> List[str]:
         urls = set()
 
-        for try_url in [
-            self._get_start_url(),
-            f"{self.BASE_URL}/out-about/babywearing",
-            f"{self.BASE_URL}/search?q={self.keyword}",
-            f"{self.BASE_URL}/collections/strollers",
-        ]:
+        # Strategy 1: Try WooCommerce search (most reliable)
+        search_url = f"{self.BASE_URL}/?s={self.keyword}&post_type=product"
+        try:
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
+            await asyncio.sleep(4)
+            await self._scroll_to_bottom(page, pause=1.5, max_scrolls=5)
+
+            # Collect hrefs using JavaScript for reliability
+            hrefs = await page.evaluate("""
+                () => Array.from(document.querySelectorAll('a[href]'))
+                    .map(a => a.href)
+                    .filter(h => h.includes('eggsnsoldiers.com'))
+            """)
+            urls = self._extract_product_urls(hrefs)
+        except Exception:
+            pass
+
+        # Strategy 2: Try the strollers category page
+        if not urls:
             try:
-                await page.goto(try_url, wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
-                await asyncio.sleep(2)
+                await page.goto(self.LISTING_URL, wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
+                await asyncio.sleep(4)
+                await self._scroll_to_bottom(page, pause=1.5, max_scrolls=5)
+
+                hrefs = await page.evaluate("""
+                    () => Array.from(document.querySelectorAll('a[href]'))
+                        .map(a => a.href)
+                        .filter(h => h.includes('eggsnsoldiers.com'))
+                """)
+                urls = self._extract_product_urls(hrefs)
             except Exception:
-                continue
+                pass
 
-            links = await page.query_selector_all(
-                "a[href*='/products/'], a[href*='/product/'], "
-                ".product-card a, [class*='product'] a[href]"
-            )
-            for link in links:
-                href = await link.get_attribute("href")
-                if href and ("/products/" in href or "/product/" in href):
-                    clean = href.split("?")[0]
-                    urls.add(self._make_absolute(clean))
+        # Strategy 3: Try related categories
+        if not urls:
+            for cat_url in [
+                f"{self.BASE_URL}/product-category/out-about/",
+                f"{self.BASE_URL}/product-category/out-about/car-seats/",
+            ]:
+                try:
+                    await page.goto(cat_url, wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
+                    await asyncio.sleep(3)
 
-            if urls:
-                break
+                    hrefs = await page.evaluate("""
+                        () => Array.from(document.querySelectorAll('a[href]'))
+                            .map(a => a.href)
+                            .filter(h => h.includes('eggsnsoldiers.com'))
+                    """)
+                    urls = self._extract_product_urls(hrefs)
+                    if urls:
+                        break
+                except Exception:
+                    continue
 
         return list(urls)
 
@@ -68,16 +131,35 @@ class EggsAndSoldiersScraper(BaseStrollerScraper):
             if isinstance(brand_info, dict):
                 product.brand = brand_info.get("name", "")
 
+        # WooCommerce DOM fallbacks
         if not product.product:
-            product.product = await self._safe_text(page, "h1")
+            product.product = await self._safe_text(page, "h1.product_title, h1.entry-title, h1")
         if not product.brand:
-            product.brand = await self._safe_text(page, ".product-vendor, [class*='vendor'], [class*='brand']")
+            product.brand = await self._safe_text(
+                page,
+                ".woocommerce-product-attributes-item--attribute_pa_brand .woocommerce-product-attributes-item__value, "
+                "[class*='brand'], .product-vendor"
+            )
         if not product.price:
-            product.price = await self._safe_text(page, ".product-price, .price, [class*='price']")
+            product.price = await self._safe_text(
+                page,
+                ".woocommerce-Price-amount, .price ins .amount, .price .amount, "
+                ".summary .price"
+            )
         if not product.description:
-            product.description = await self._safe_text(page, ".product-description, [class*='description']")
+            product.description = await self._safe_text(
+                page,
+                ".woocommerce-product-details__short-description, "
+                "#tab-description, .product-description"
+            )
 
-        features = await self._safe_all_text(page, ".product-description li")
+        # WooCommerce product attributes table
+        specs = await self._extract_spec_table(page, ".woocommerce-product-attributes, .shop_attributes, table")
+        product.weight = specs.get("weight", "")
+        product.color = specs.get("color", specs.get("colour", ""))
+        product.suitable_for = specs.get("suitable for", specs.get("age", ""))
+
+        features = await self._safe_all_text(page, ".product-description li, #tab-description li, .woocommerce-Tabs-panel li")
         if features:
             product.features = " ; ".join(features[:15])
 

@@ -1,4 +1,5 @@
 import asyncio
+import re
 from typing import List, Optional
 from playwright.async_api import Page
 
@@ -11,53 +12,60 @@ from anti_bot import random_delay
 
 
 class OunassScraper(BaseStrollerScraper):
-    """Ounass - Luxury SPA retailer with aggressive anti-bot."""
+    """Ounass - Luxury SPA retailer.
+    Product URLs: /shop-BRAND-PRODUCT-NAME-ID.html or /NUMERIC_ID.html
+    Search works at: https://www.ounass.ae/search/?q=strollers
+    """
     RETAILER_NAME = "Ounass"
     BASE_URL = "https://www.ounass.ae"
     LISTING_URL = "https://www.ounass.ae/kids/accessories/strollers/"
-    RETRY_DELAY = 8.0
+    RETRY_DELAY = 5.0
+
+    def _is_product_url(self, href: str) -> bool:
+        """Check if URL is a product page (not category/nav)."""
+        if not href or not href.endswith(".html"):
+            return False
+        path = href.split("?")[0].rstrip("/")
+        basename = path.split("/")[-1]
+        # Product URLs: /shop-brand-product-ID.html
+        if basename.startswith("shop-"):
+            return True
+        # Numeric ID pattern like /218316375.html
+        if re.match(r'^\d+\.html$', basename):
+            return True
+        return False
 
     async def _get_all_product_urls(self, page: Page) -> List[str]:
-        await page.goto(self._get_start_url(), wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
-        await asyncio.sleep(4)
+        # Ounass search works well — use it as primary approach
+        search_url = f"{self.BASE_URL}/search/?q={self.keyword}"
+        await page.goto(search_url, wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
+        await asyncio.sleep(5)
 
         # Scroll to load all products
         await self._scroll_to_bottom(page, pause=2.0, max_scrolls=30)
 
         urls = set()
-        links = await page.query_selector_all(
-            "a[href*='/product/'], a[href*='/en-ae/'], "
-            ".product-card a, .ProductCard a, [class*='product'] a[href]"
-        )
+        links = await page.query_selector_all("a[href]")
         for link in links:
             href = await link.get_attribute("href")
-            if href and ("/product/" in href or len(href.split("/")[-1]) > 15):
+            if href and self._is_product_url(href):
                 clean = href.split("?")[0]
                 full = self._make_absolute(clean)
-                # Exclude category/listing pages
-                if not any(x in full for x in ["/kids/", "/accessories/", "/strollers/"]) or full.count("/") > 5:
-                    urls.add(full)
+                urls.add(full)
 
-        # Fallback: try paginated approach
+        # Fallback: try the listing URL directly
         if not urls:
-            page_num = 1
-            while page_num <= 10:
-                url = f"{self._get_start_url()}?page={page_num}" if page_num > 1 else self._get_start_url()
-                await page.goto(url, wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
-                await asyncio.sleep(3)
+            await page.goto(self._get_start_url(), wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
+            await asyncio.sleep(4)
+            await self._scroll_to_bottom(page, pause=2.0, max_scrolls=20)
 
-                links = await page.query_selector_all("a[href]")
-                found = False
-                for link in links:
-                    href = await link.get_attribute("href")
-                    if href and "/product/" in href:
-                        urls.add(self._make_absolute(href.split("?")[0]))
-                        found = True
-
-                if not found:
-                    break
-                page_num += 1
-                await random_delay(3.0, 6.0)
+            links = await page.query_selector_all("a[href]")
+            for link in links:
+                href = await link.get_attribute("href")
+                if href and self._is_product_url(href):
+                    clean = href.split("?")[0]
+                    full = self._make_absolute(clean)
+                    urls.add(full)
 
         return list(urls)
 
@@ -67,7 +75,7 @@ class OunassScraper(BaseStrollerScraper):
 
         product = StrollerProduct()
 
-        # JSON-LD (Ounass often has it)
+        # JSON-LD
         ld = await self._extract_json_ld(page)
         if ld:
             product.product = ld.get("name", "")
@@ -84,17 +92,20 @@ class OunassScraper(BaseStrollerScraper):
             if isinstance(brand_info, dict):
                 product.brand = brand_info.get("name", "")
 
-        # DOM
+        # DOM fallbacks
         if not product.product:
             product.product = await self._safe_text(page, "h1, [class*='product-name'], [data-testid='product-name']")
         if not product.brand:
-            product.brand = await self._safe_text(page, "[class*='brand'], [data-testid='product-brand']")
+            product.brand = await self._safe_text(page, "[class*='brand'], [data-testid='product-brand'], [class*='designer']")
         if not product.price:
             product.price = await self._safe_text(page, "[class*='price'], [data-testid='product-price']")
 
         # Expand details section
         try:
-            details_btn = await page.query_selector("button:has-text('Details'), button:has-text('Description'), [class*='details-toggle']")
+            details_btn = await page.query_selector(
+                "button:has-text('Details'), button:has-text('Description'), "
+                "[class*='details-toggle'], [class*='accordion'] button"
+            )
             if details_btn:
                 await details_btn.click()
                 await asyncio.sleep(0.5)
@@ -110,6 +121,9 @@ class OunassScraper(BaseStrollerScraper):
             product.features = " ; ".join(features[:15])
 
         # Color
-        product.color = await self._safe_text(page, "[class*='color-name'], [class*='colorName'], [class*='selected-color']")
+        if not product.color:
+            product.color = await self._safe_text(
+                page, "[class*='color-name'], [class*='colorName'], [class*='selected-color']"
+            )
 
         return product
