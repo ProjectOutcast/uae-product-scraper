@@ -33,6 +33,8 @@ async def run_all_scrapers(
     output_dir="output",
     keyword="strollers",
     progress_callback=None,
+    should_stop=None,
+    should_skip=None,
 ):
     """Main scraping orchestration. Can be called from CLI or Flask."""
     os.makedirs(output_dir, exist_ok=True)
@@ -56,7 +58,14 @@ async def run_all_scrapers(
 
     log(f"Starting scrape for \"{keyword}\" across {total} retailer{'s' if total != 1 else ''}...", 0)
 
+    skipped = []
+
     for name in targets:
+        # Check if user requested full stop
+        if should_stop and should_stop():
+            log(f"STOPPED — {len(all_products)} products collected from {completed}/{total} retailers", int((completed / total) * 100))
+            break
+
         if name not in registry:
             log(f"[WARN] Unknown retailer: {name}")
             continue
@@ -83,18 +92,29 @@ async def run_all_scrapers(
             headless=headless,
             keyword=keyword,
             on_status=_make_status_cb(progress_callback),
+            should_stop=should_stop,
+            should_skip=should_skip,
         )
 
         try:
             products = await scraper.run()
+
+            # Check if this retailer was skipped mid-scrape
+            was_skipped = getattr(scraper, '_was_skipped', False)
+
             products = [normalize_product(p) for p in products]
             all_products.extend(products)
-            progress.mark_retailer_done(name)
             completed += 1
 
-            partial_path = os.path.join(output_dir, "products_partial.csv")
-            export_combined_csv(all_products, partial_path)
-            log(f"[OK] {name}: {len(products)} products scraped (total so far: {len(all_products)})", int((completed / total) * 100))
+            if was_skipped:
+                skipped.append(name)
+                progress.mark_retailer_failed(name, "skipped by user")
+                log(f"[SKIP] {name}: skipped by user ({len(products)} products collected)", int((completed / total) * 100))
+            else:
+                progress.mark_retailer_done(name)
+                partial_path = os.path.join(output_dir, "products_partial.csv")
+                export_combined_csv(all_products, partial_path)
+                log(f"[OK] {name}: {len(products)} products scraped (total so far: {len(all_products)})", int((completed / total) * 100))
 
         except Exception as e:
             logging.exception(f"Failed to scrape {name}")
@@ -103,10 +123,16 @@ async def run_all_scrapers(
             completed += 1
             log(f"[FAIL] {name}: {e}", int((completed / total) * 100))
 
-    if failed:
-        log(f"DONE — {len(all_products)} products from {completed - len(failed)}/{total} retailers ({len(failed)} failed: {', '.join(failed)})", 100)
-    else:
-        log(f"DONE — {len(all_products)} products from {completed}/{total} retailers", 100)
+    # Only show DONE summary if we weren't stopped early (app.py handles that message)
+    if not (should_stop and should_stop()):
+        parts = []
+        if failed:
+            parts.append(f"{len(failed)} failed: {', '.join(failed)}")
+        if skipped:
+            parts.append(f"{len(skipped)} skipped: {', '.join(skipped)}")
+        suffix = f" ({'; '.join(parts)})" if parts else ""
+        ok_count = completed - len(failed) - len(skipped)
+        log(f"DONE — {len(all_products)} products from {ok_count}/{total} retailers{suffix}", 100)
 
     return all_products
 

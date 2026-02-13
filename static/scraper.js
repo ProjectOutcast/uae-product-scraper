@@ -111,6 +111,13 @@ async function startScraping() {
     if (elapsedTimer) clearInterval(elapsedTimer);
     elapsedTimer = setInterval(updateElapsed, 1000);
 
+    // Show skip/stop controls
+    document.getElementById('scrapeControls').style.display = '';
+    document.getElementById('skipBtn').disabled = false;
+    document.getElementById('skipBtn').innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,4 15,12 5,20"/><rect x="17" y="5" width="3" height="14"/></svg> Skip Brand';
+    document.getElementById('stopBtn').disabled = false;
+    document.getElementById('stopBtn').innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> Stop &amp; Download CSV';
+
     // Scroll to progress
     progressSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
@@ -158,6 +165,7 @@ function updateTrackerChip(name, state) {
     if (state === 'active') chip.classList.add('active');
     else if (state === 'done') chip.classList.add('done');
     else if (state === 'failed') chip.classList.add('failed');
+    else if (state === 'skipped') chip.classList.add('skipped');
 }
 
 function updateElapsed() {
@@ -206,25 +214,31 @@ function connectSSE(jobId) {
 
             case 'completed':
                 eventSource.close();
-                document.getElementById('progressBar').style.width = '100%';
-                document.getElementById('progressPct').textContent = '100%';
+                hideControls();
+
+                if (!data.stopped_early) {
+                    document.getElementById('progressBar').style.width = '100%';
+                    document.getElementById('progressPct').textContent = '100%';
+                }
 
                 if (data.has_file || (data.summary && data.summary.total > 0)) {
                     const dl = document.getElementById('downloadSection');
                     dl.classList.add('active');
                     document.getElementById('downloadBtn').href = `/api/download/${jobId}?format=csv`;
+                    const label = data.stopped_early ? 'products collected (stopped early)' : 'products scraped';
                     document.getElementById('downloadSummary').textContent =
-                        `${data.summary.total} products scraped`;
+                        `${data.summary.total} ${label}`;
                     totalProducts = data.summary.total;
                     document.getElementById('statProducts').textContent = totalProducts;
                 }
 
-                setActionText('Scraping complete!', true);
+                setActionText(data.stopped_early ? 'Scraping stopped — CSV ready to download' : 'Scraping complete!', true);
                 resetBtn();
                 break;
 
             case 'error':
                 eventSource.close();
+                hideControls();
                 addLog('Error: ' + data.message, 'fail');
                 setActionText('Error: ' + data.message, true);
                 resetBtn();
@@ -242,7 +256,8 @@ function handleLogMessage(message) {
     let cls = 'info';
     if (message.includes('[OK]')) cls = 'ok';
     else if (message.includes('[FAIL]') || message.includes('Error')) cls = 'fail';
-    else if (message.startsWith('DONE')) cls = 'ok';
+    else if (message.includes('[SKIP]')) cls = 'skip';
+    else if (message.startsWith('DONE') || message.startsWith('STOPPED')) cls = 'ok';
     else if (message.startsWith('  ')) cls = 'detail';
 
     addLog(message, cls);
@@ -253,15 +268,15 @@ function handleLogMessage(message) {
     const scrapingMatch = message.match(/^Scraping: (.+?) \((\d+)\/(\d+)\)/);
     if (scrapingMatch) {
         const name = scrapingMatch[1];
-        // Mark previous active as done (if any still active and not this one)
-        for (const [n, s] of Object.entries(retailerStates)) {
-            if (s === 'active' && n !== name) {
-                // It was already handled by [OK]/[FAIL]
-            }
-        }
         retailerStates[name] = 'active';
         updateTrackerChip(name, 'active');
         setActionText(`Scraping ${name}...`, false);
+        // Re-enable skip button for the new retailer
+        const skipBtn = document.getElementById('skipBtn');
+        if (skipBtn) {
+            skipBtn.disabled = false;
+            skipBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,4 15,12 5,20"/><rect x="17" y="5" width="3" height="14"/></svg> Skip Brand';
+        }
         return;
     }
 
@@ -290,6 +305,18 @@ function handleLogMessage(message) {
         document.getElementById('statProducts').textContent = totalProducts;
         document.getElementById('statRetailers').textContent = `${completedRetailers} / ${selectedRetailers.length}`;
         setActionText(`${name} done — ${okMatchSimple[2]} products found`, false);
+        return;
+    }
+
+    // "[SKIP] Le Bouquet: skipped by user (3 products collected)" → mark skipped
+    const skipMatch = message.match(/\[SKIP\] (.+?): skipped by user/);
+    if (skipMatch) {
+        const name = skipMatch[1];
+        retailerStates[name] = 'skipped';
+        completedRetailers++;
+        updateTrackerChip(name, 'skipped');
+        document.getElementById('statRetailers').textContent = `${completedRetailers} / ${selectedRetailers.length}`;
+        setActionText(`${name} skipped`, false);
         return;
     }
 
@@ -333,8 +360,8 @@ function handleLogMessage(message) {
         return;
     }
 
-    // "DONE — 156 products from 20/22 retailers" → final
-    if (message.startsWith('DONE')) {
+    // "DONE — 156 products from 20/22 retailers" or "STOPPED —..." → final
+    if (message.startsWith('DONE') || message.startsWith('STOPPED') || message.startsWith('Stopped by user')) {
         setActionText(message, true);
         return;
     }
@@ -343,6 +370,43 @@ function handleLogMessage(message) {
     if (!message.startsWith('  ') && message.length > 5) {
         setActionText(message, false);
     }
+}
+
+// ─── Skip / Stop controls ───────────────────────────────────────────────
+
+async function skipBrand() {
+    if (!currentJobId) return;
+    const btn = document.getElementById('skipBtn');
+    btn.disabled = true;
+    btn.textContent = 'Skipping...';
+    try {
+        await fetch(`/api/skip/${currentJobId}`, { method: 'POST' });
+    } catch (e) {
+        console.error('Skip request failed:', e);
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,4 15,12 5,20"/><rect x="17" y="5" width="3" height="14"/></svg> Skip Brand';
+    }
+}
+
+async function stopAndDownload() {
+    if (!currentJobId) return;
+    const btn = document.getElementById('stopBtn');
+    btn.disabled = true;
+    btn.textContent = 'Stopping...';
+    // Also disable skip since we're stopping everything
+    document.getElementById('skipBtn').disabled = true;
+    try {
+        await fetch(`/api/stop/${currentJobId}`, { method: 'POST' });
+    } catch (e) {
+        console.error('Stop request failed:', e);
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> Stop &amp; Download CSV';
+        document.getElementById('skipBtn').disabled = false;
+    }
+}
+
+function hideControls() {
+    document.getElementById('scrapeControls').style.display = 'none';
 }
 
 function toggleLog() {

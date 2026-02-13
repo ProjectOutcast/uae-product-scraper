@@ -128,6 +128,10 @@ def start_product_scrape():
         "csv_filename": None,
         "error": None,
         "created_at": datetime.now(),
+        # Skip / Stop controls
+        "skip_retailer": False,   # set True to skip current retailer
+        "stop_requested": False,  # set True to stop entire scrape
+        "stopped_early": False,   # set after stop completes
     }
 
     with jobs_lock:
@@ -151,6 +155,22 @@ def _run_product_scrape_job(job_id, keyword, retailers):
                 if percent is not None:
                     jobs[job_id]["progress"] = percent
 
+    def should_stop():
+        with jobs_lock:
+            job = jobs.get(job_id)
+            return job.get("stop_requested", False) if job else False
+
+    def should_skip():
+        """Check & consume the skip flag (returns True once, then resets)."""
+        with jobs_lock:
+            job = jobs.get(job_id)
+            if not job:
+                return False
+            if job.get("skip_retailer"):
+                job["skip_retailer"] = False  # consume the flag
+                return True
+            return False
+
     try:
         output_dir = os.path.join(TEMP_DIR, job_id)
         os.makedirs(output_dir, exist_ok=True)
@@ -163,8 +183,12 @@ def _run_product_scrape_job(job_id, keyword, retailers):
                 output_dir=output_dir,
                 keyword=keyword,
                 progress_callback=progress_callback,
+                should_stop=should_stop,
+                should_skip=should_skip,
             )
         )
+
+        was_stopped = should_stop()
 
         if products:
             csv_filename = f"{keyword.replace(' ', '_')}_products.csv"
@@ -178,9 +202,15 @@ def _run_product_scrape_job(job_id, keyword, retailers):
                     jobs[job_id]["csv_filepath"] = csv_path
                     jobs[job_id]["csv_filename"] = csv_filename
                     jobs[job_id]["summary"] = {"total": len(products)}
-                    jobs[job_id]["messages"].append(
-                        f"Done! Exported {len(products)} products to CSV."
-                    )
+                    jobs[job_id]["stopped_early"] = was_stopped
+                    if was_stopped:
+                        jobs[job_id]["messages"].append(
+                            f"Stopped by user. Exported {len(products)} products collected so far."
+                        )
+                    else:
+                        jobs[job_id]["messages"].append(
+                            f"Done! Exported {len(products)} products to CSV."
+                        )
                     _save_job_meta(job_id, jobs[job_id])
         else:
             with jobs_lock:
@@ -188,7 +218,11 @@ def _run_product_scrape_job(job_id, keyword, retailers):
                     jobs[job_id]["status"] = "completed"
                     jobs[job_id]["progress"] = 100
                     jobs[job_id]["summary"] = {"total": 0}
-                    jobs[job_id]["messages"].append("No products found.")
+                    jobs[job_id]["stopped_early"] = was_stopped
+                    if was_stopped:
+                        jobs[job_id]["messages"].append("Stopped by user. No products were collected.")
+                    else:
+                        jobs[job_id]["messages"].append("No products found.")
                     _save_job_meta(job_id, jobs[job_id])
 
     except Exception as e:
@@ -231,6 +265,7 @@ def stream_progress(job_id):
                     "type": "completed",
                     "summary": job.get("summary"),
                     "has_file": job.get("csv_filepath") is not None,
+                    "stopped_early": job.get("stopped_early", False),
                 }
                 yield f"data: {json.dumps(result)}\n\n"
                 break
@@ -249,6 +284,28 @@ def stream_progress(job_id):
             "Connection": "keep-alive",
         },
     )
+
+
+@app.route("/api/skip/<job_id>", methods=["POST"])
+def skip_retailer(job_id):
+    """Signal the scraper to skip the current retailer."""
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.get("status") != "running":
+            return jsonify({"error": "Job not active"}), 404
+        job["skip_retailer"] = True
+    return jsonify({"ok": True})
+
+
+@app.route("/api/stop/<job_id>", methods=["POST"])
+def stop_scrape(job_id):
+    """Signal the scraper to stop and export what it has so far."""
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job or job.get("status") != "running":
+            return jsonify({"error": "Job not active"}), 404
+        job["stop_requested"] = True
+    return jsonify({"ok": True})
 
 
 @app.route("/api/download/<job_id>")

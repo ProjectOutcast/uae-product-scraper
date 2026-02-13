@@ -20,13 +20,17 @@ class BaseStrollerScraper(ABC):
     PAGE_LOAD_TIMEOUT: int = 20000
     PER_PRODUCT_TIMEOUT: int = 45  # seconds — hard cap per product including retries
 
-    def __init__(self, progress: ProgressTracker, headless: bool = True, keyword: str = "", on_status=None):
+    def __init__(self, progress: ProgressTracker, headless: bool = True, keyword: str = "",
+                 on_status=None, should_stop=None, should_skip=None):
         self.progress = progress
         self.headless = headless
         self.keyword = keyword or DEFAULT_KEYWORD
         self.logger = logging.getLogger(f"scraper.{self.RETAILER_NAME}")
         self.products: List[StrollerProduct] = []
         self._on_status = on_status  # callback(message) for live UI updates
+        self._should_stop = should_stop  # callable() -> bool: stop entire scrape
+        self._should_skip = should_skip  # callable() -> bool: skip this retailer
+        self._was_skipped = False  # set True if skip was triggered during run()
 
     def _get_start_url(self) -> str:
         """Return search URL when keyword differs from default, otherwise listing URL."""
@@ -56,6 +60,15 @@ class BaseStrollerScraper(ABC):
             await setup_stealth(page)
 
             try:
+                # Check stop/skip before even starting URL collection
+                if self._should_stop and self._should_stop():
+                    self._emit(f"  [{self.RETAILER_NAME}] Stopping before URL collection...")
+                    return self.products
+                if self._should_skip and self._should_skip():
+                    self._was_skipped = True
+                    self._emit(f"  [{self.RETAILER_NAME}] Skipping (user requested)...")
+                    return self.products
+
                 await self._dismiss_cookies(page)
                 self._emit(f"  Collecting product URLs from {self.RETAILER_NAME}...")
                 product_urls = await self._get_all_product_urls(page)
@@ -69,6 +82,17 @@ class BaseStrollerScraper(ABC):
                 scraped_count = 0
                 skipped = 0
                 for i, url in enumerate(product_urls):
+                    # Check if user wants to stop the entire scrape
+                    if self._should_stop and self._should_stop():
+                        self._emit(f"  [{self.RETAILER_NAME}] Stopping (user requested)...")
+                        break
+
+                    # Check if user wants to skip this retailer
+                    if self._should_skip and self._should_skip():
+                        self._was_skipped = True
+                        self._emit(f"  [{self.RETAILER_NAME}] Skipping (user requested)...")
+                        break
+
                     if self.progress.is_already_scraped(self.RETAILER_NAME, url):
                         skipped += 1
                         continue
