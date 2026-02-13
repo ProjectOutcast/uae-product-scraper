@@ -12,19 +12,16 @@ from anti_bot import random_delay
 
 class MothercareScraper(BaseStrollerScraper):
     RETAILER_NAME = "Mothercare"
-    BASE_URL = "https://www.mothercare.ae/en"
+    BASE_URL = "https://www.mothercare.ae"
     LISTING_URL = "https://www.mothercare.ae/en/shop-strollers"
 
     async def _get_all_product_urls(self, page: Page) -> List[str]:
         await page.goto(self._get_start_url(), wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
-        await asyncio.sleep(3)
+        await asyncio.sleep(8)  # JS-rendered SPA, needs time to hydrate
 
-        # Try Load More button first
+        # Click "load more products" button until all products are shown
         for _ in range(30):
-            btn = await page.query_selector(
-                "button:has-text('Load More'), button:has-text('Show More'), "
-                ".load-more-btn, .btn-load-more, [class*='loadMore']"
-            )
+            btn = await page.query_selector("button.pager-button")
             if not btn:
                 break
             try:
@@ -33,69 +30,44 @@ class MothercareScraper(BaseStrollerScraper):
                     break
                 await btn.scroll_into_view_if_needed()
                 await btn.click()
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
                 await random_delay(0.5, 1.5)
             except Exception:
                 break
 
-        # If no load more, try infinite scroll
-        await self._scroll_to_bottom(page, pause=2.0, max_scrolls=30)
-
+        # Extract product URLs from product cards
         urls = set()
-        links = await page.query_selector_all(
-            ".product-tile a[href], .product-card a[href], "
-            "a[href*='/stroller'], a[href*='/pushchair'], "
-            "[class*='product'] a[href]"
-        )
+        links = await page.query_selector_all("a.product-item-title[href], a[data-link='pdp'][href]")
 
         for link in links:
             href = await link.get_attribute("href")
-            if href and not any(x in href for x in ["/shop-strollers", "/category", "/cart"]):
+            if href and "/buy-" in href:
                 clean = href.split("?")[0]
-                full = self._make_absolute(clean)
-                if full not in urls and len(clean) > 20:
-                    urls.add(full)
-
-        # Fallback: paginated URLs
-        if not urls:
-            page_num = 1
-            while page_num <= 30:
-                url = f"{self._get_start_url()}?page={page_num}" if page_num > 1 else self._get_start_url()
-                await page.goto(url, wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
-                await asyncio.sleep(2)
-
-                links = await page.query_selector_all("a[href]")
-                found = False
-                for link in links:
-                    href = await link.get_attribute("href")
-                    if href and "/en/" in href and len(href.split("/")[-1]) > 10:
-                        clean = href.split("?")[0]
-                        full = self._make_absolute(clean)
-                        if full not in urls:
-                            urls.add(full)
-                            found = True
-
-                if not found:
-                    break
-                page_num += 1
-                await random_delay(2.0, 4.0)
+                # Ensure proper absolute URL (href is like /en/buy-...)
+                if clean.startswith("/"):
+                    full = f"https://www.mothercare.ae{clean}"
+                else:
+                    full = clean
+                urls.add(full)
 
         return list(urls)
 
     async def _scrape_product_page(self, page: Page, url: str) -> Optional[StrollerProduct]:
         await page.goto(url, wait_until="domcontentloaded", timeout=self.PAGE_LOAD_TIMEOUT)
-        await asyncio.sleep(2)
+        await asyncio.sleep(6)  # Wait for JS to render product details
 
         product = StrollerProduct()
 
-        # JSON-LD first
+        # JSON-LD first — most reliable source on Mothercare
         ld = await self._extract_json_ld(page)
         if ld:
             product.product = ld.get("name", "")
             product.description = ld.get("description", "")
-            product.image_url = ld.get("image", "")
-            if isinstance(product.image_url, list):
-                product.image_url = product.image_url[0] if product.image_url else ""
+            img = ld.get("image", "")
+            if isinstance(img, list):
+                product.image_url = img[0] if img else ""
+            else:
+                product.image_url = img
             offers = ld.get("offers", {})
             if isinstance(offers, list):
                 offers = offers[0] if offers else {}
@@ -105,45 +77,109 @@ class MothercareScraper(BaseStrollerScraper):
             if isinstance(brand_info, dict):
                 product.brand = brand_info.get("name", "")
 
-        # DOM fallbacks
+        # DOM fallbacks for title
         if not product.product:
-            product.product = await self._safe_text(page, "h1.product-name, h1.pdp-title, h1")
+            product.product = await self._safe_text(page, "h6.pdp-product__title")
 
+        # DOM fallback for brand from attributes section
         if not product.brand:
-            product.brand = await self._safe_text(page, ".product-brand, .brand-name, [class*='brand']")
-
-        if not product.price:
-            product.price = await self._safe_text(
-                page, ".product-price .sale-price, .product-price .price, "
-                "[class*='price'] [class*='sale'], [class*='price']"
+            product.brand = await self._safe_text(
+                page,
+                ".pdp-product-description__attribute--product_brand span:not(.pdp-product-description__attribute--label)"
             )
 
-        # Specs
-        specs = await self._extract_spec_table(page, ".product-specifications, .product-attributes, .pdp-specs, table")
+        # DOM fallback for price
+        if not product.price:
+            price_text = await self._safe_text(page, ".pdp-product__prices span.dropin-price")
+            if price_text:
+                product.price = price_text.strip()
 
-        product.weight = specs.get("weight", specs.get("product weight", ""))
-        product.color = specs.get("colour", specs.get("color", ""))
-        product.frame_color = specs.get("frame colour", specs.get("frame color", ""))
-        product.suitable_for = specs.get("suitable from", specs.get("suitable for",
-                                  specs.get("age range", specs.get("age", ""))))
+        # Meta tag fallbacks
+        if not product.price:
+            meta_price = await self._safe_attr(page, 'meta[name="product:price-amount"]', "content")
+            if meta_price:
+                product.price = f"AED {meta_price}"
 
-        # Features
+        if not product.brand:
+            # Try dataLayer
+            try:
+                brand = await page.evaluate("""
+                    () => {
+                        if (window.dataLayer) {
+                            for (const entry of window.dataLayer) {
+                                if (entry.ecommerce && entry.ecommerce.items) {
+                                    const item = entry.ecommerce.items[0];
+                                    if (item && item.item_brand) return item.item_brand;
+                                }
+                            }
+                        }
+                        return '';
+                    }
+                """)
+                if brand:
+                    product.brand = brand
+            except Exception:
+                pass
+
+        # Color from attributes section
+        product.color = await self._safe_text(
+            page,
+            ".pdp-product-description__attribute--color span:not(.pdp-product-description__attribute--label)"
+        )
+
+        # Description from accordion
+        if not product.description:
+            # Try clicking to expand the description accordion
+            try:
+                details_el = await page.query_selector("details.pdp-product__description")
+                if details_el:
+                    summary = await details_el.query_selector("summary")
+                    if summary:
+                        await summary.click()
+                        await asyncio.sleep(0.5)
+            except Exception:
+                pass
+            product.description = await self._safe_text(
+                page, ".pdp-product__description--details.accordion-item-body"
+            )
+
+        # Features — try to get bullet points from description
         features = await self._safe_all_text(
-            page, ".product-features li, .key-features li, "
-            "[class*='feature'] li, .product-description ul li"
+            page,
+            ".pdp-product__description--details li, "
+            ".pdp-product__description ul li"
         )
         if features:
             product.features = " ; ".join(features[:15])
 
-        # Expand Read More for description
-        if not product.description:
-            try:
-                read_more = await page.query_selector("button:has-text('Read More'), .read-more-btn")
-                if read_more:
-                    await read_more.click()
-                    await asyncio.sleep(0.5)
-            except Exception:
-                pass
-            product.description = await self._safe_text(page, ".product-description, .pdp-description, [class*='description']")
+        # Specs from attributes section
+        try:
+            attrs = await page.query_selector_all(".pdp-product-description__attribute")
+            for attr_el in attrs:
+                label_el = await attr_el.query_selector(".pdp-product-description__attribute--label")
+                if not label_el:
+                    continue
+                label = (await label_el.inner_text()).strip().lower()
+                # Get the sibling span (value)
+                spans = await attr_el.query_selector_all("span:not(.pdp-product-description__attribute--label)")
+                value = ""
+                for span in spans:
+                    text = (await span.inner_text()).strip()
+                    if text:
+                        value = text
+                        break
+
+                if not value:
+                    continue
+
+                if "weight" in label:
+                    product.weight = value
+                elif "colour" in label or "color" in label:
+                    if not product.color:
+                        product.color = value
+                elif "age" in label or "suitable" in label:
+                    product.suitable_for = value
+        except Exception:
+            pass
 
         return product
